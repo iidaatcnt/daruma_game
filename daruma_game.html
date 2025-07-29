@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>だるまさんが転んだゲーム</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Arial', sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+        }
+
+        h1 {
+            color: white;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+            margin-bottom: 20px;
+        }
+
+        #gameCanvas {
+            border: 3px solid #fff;
+            border-radius: 10px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+            background: #87CEEB;
+        }
+
+        .controls {
+            margin-top: 20px;
+            color: white;
+            text-align: center;
+        }
+
+        .controls button {
+            background: #ff6b6b;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 25px;
+            font-size: 16px;
+            cursor: pointer;
+            margin: 5px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            transition: all 0.3s ease;
+        }
+
+        .controls button:hover {
+            background: #ff5252;
+            transform: translateY(-2px);
+        }
+
+        .status {
+            margin-top: 15px;
+            font-size: 18px;
+            font-weight: bold;
+            color: white;
+            text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
+        }
+
+        .instructions {
+            background: rgba(255,255,255,0.1);
+            padding: 15px;
+            border-radius: 10px;
+            margin-top: 15px;
+            color: white;
+            text-align: center;
+            backdrop-filter: blur(10px);
+        }
+    </style>
+</head>
+<body>
+    <h1>🎌 だるまさんが転んだ 🎌</h1>
+    <canvas id="gameCanvas" width="800" height="400"></canvas>
+    
+    <div class="controls">
+        <button onclick="startGame()">ゲーム開始</button>
+        <button onclick="resetGame()">リセット</button>
+    </div>
+    
+    <div class="status" id="status">スペースキーを長押しして前進！音声が流れている間は安全です！</div>
+    
+    <div class="instructions">
+        <strong>遊び方:</strong><br>
+        🏃‍♂️ スペースキーを押し続けて前進<br>
+        🎵 音声が流れている間は安全に移動可能<br>
+        🚫 音声停止後はだるまが振り返るので即座に停止<br>
+        🏁 ゴールまで辿り着けばクリア！
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const statusDiv = document.getElementById('status');
+
+        // ゲーム状態
+        let gameState = 'waiting'; // waiting, playing, safe, danger, gameover, win
+        let player = {
+            x: 50,
+            y: 300,
+            width: 40,
+            height: 60,
+            isMoving: false,
+            animFrame: 0,
+            lastStepTime: 0
+        };
+
+        let daruma = {
+            x: 700,
+            y: 280,
+            width: 60,
+            height: 80,
+            isTurned: false,
+            turnAnimation: 0,
+            headRotation: 0
+        };
+
+        let gameTimer = 0;
+        let nextTurnTime = 0;
+        let dangerDuration = 0;
+        let score = 0;
+        let level = 1;
+        
+        // キー入力
+        let keys = {};
+        
+        // オーディオ要素
+        let darumaAudio;
+        let isAudioLoaded = false;
+
+        // イベントリスナー
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Space') {
+                e.preventDefault();
+                keys.space = true;
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            if (e.code === 'Space') {
+                e.preventDefault();
+                keys.space = false;
+            }
+        });
+
+        // 音声初期化
+        function initAudio() {
+            darumaAudio = new Audio('daruma_game.wav');
+            darumaAudio.preload = 'auto';
+            
+            darumaAudio.addEventListener('loadeddata', () => {
+                isAudioLoaded = true;
+                console.log('音声ファイルが読み込まれました');
+            });
+            
+            darumaAudio.addEventListener('error', (e) => {
+                console.log('音声ファイルの読み込みに失敗しました:', e);
+                updateStatus('⚠️ 音声ファイルが見つかりません。daruma_game.wavをアップロードしてください。');
+            });
+            
+            darumaAudio.addEventListener('ended', () => {
+                // 音声終了時にだるまが振り返る（アニメーション付き）
+                if (gameState === 'playing') {
+                    // 振り返りアニメーション開始
+                    let rotationSpeed = 0.2;
+                    const turnAnimation = () => {
+                        daruma.headRotation += rotationSpeed;
+                        if (daruma.headRotation >= Math.PI) {
+                            daruma.headRotation = Math.PI;
+                            daruma.isTurned = true;
+                            gameState = 'danger';
+                            dangerDuration = 1500 + Math.random() * 1000; // 1.5-2.5秒
+                            updateStatus('⚠️ だるまが振り返った！動いちゃダメ！');
+                        } else {
+                            requestAnimationFrame(turnAnimation);
+                        }
+                    };
+                    turnAnimation();
+                }
+            });
+        }
+
+        // 効果音生成
+        function playWinSound() {
+            // ゴール時の勝利ファンファーレ
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const notes = [523.25, 659.25, 783.99, 1046.50]; // C5, E5, G5, C6
+            const durations = [0.3, 0.3, 0.3, 0.6];
+            
+            notes.forEach((freq, index) => {
+                setTimeout(() => {
+                    const oscillator = audioCtx.createOscillator();
+                    const gainNode = audioCtx.createGain();
+                    
+                    oscillator.connect(gainNode);
+                    gainNode.connect(audioCtx.destination);
+                    
+                    oscillator.frequency.setValueAtTime(freq, audioCtx.currentTime);
+                    oscillator.type = 'triangle';
+                    
+                    gainNode.gain.setValueAtTime(0.3, audioCtx.currentTime);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + durations[index]);
+                    
+                    oscillator.start(audioCtx.currentTime);
+                    oscillator.stop(audioCtx.currentTime + durations[index]);
+                }, index * 200);
+            });
+        }
+
+        function playGameOverSound() {
+            // ゲームオーバー時の下降音
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const notes = [440, 369.99, 293.66, 220]; // A4, F#4, D4, A3
+            
+            notes.forEach((freq, index) => {
+                setTimeout(() => {
+                    const oscillator = audioCtx.createOscillator();
+                    const gainNode = audioCtx.createGain();
+                    
+                    oscillator.connect(gainNode);
+                    gainNode.connect(audioCtx.destination);
+                    
+                    oscillator.frequency.setValueAtTime(freq, audioCtx.currentTime);
+                    oscillator.type = 'sawtooth';
+                    
+                    gainNode.gain.setValueAtTime(0.4, audioCtx.currentTime);
+                    gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.4);
+                    
+                    oscillator.start(audioCtx.currentTime);
+                    oscillator.stop(audioCtx.currentTime + 0.4);
+                }, index * 100);
+            });
+        }
+
+        function playStepSound() {
+            // 歩行時の効果音
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const oscillator = audioCtx.createOscillator();
+            const gainNode = audioCtx.createGain();
+            
+            oscillator.connect(gainNode);
+            gainNode.connect(audioCtx.destination);
+            
+            oscillator.frequency.setValueAtTime(200 + Math.random() * 100, audioCtx.currentTime);
+            oscillator.type = 'square';
+            
+            gainNode.gain.setValueAtTime(0.1, audioCtx.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+            
+            oscillator.start(audioCtx.currentTime);
+            oscillator.stop(audioCtx.currentTime + 0.1);
+        }
+
+        // ゲーム開始
+        function startGame() {
+            initAudio();
+            gameState = 'playing';
+            player.x = 50;
+            player.isMoving = false;
+            daruma.isTurned = false;
+            gameTimer = 0;
+            nextTurnTime = 2000; // 最初は2秒後に開始
+            dangerDuration = 0;
+            score = 0;
+            level = 1;
+            updateStatus('ゲーム開始！音声が流れている間は安全です！');
+            
+            // 少し待ってから最初の音声再生
+            setTimeout(() => {
+                playDarumaVoice();
+            }, 1000);
+        }
+
+        // ゲームリセット
+        function resetGame() {
+            gameState = 'waiting';
+            player.x = 50;
+            player.isMoving = false;
+            player.lastStepTime = 0;
+            daruma.isTurned = false;
+            daruma.headRotation = 0;
+            gameTimer = 0;
+            score = 0;
+            level = 1;
+            
+            // 音声停止
+            if (darumaAudio) {
+                darumaAudio.pause();
+                darumaAudio.currentTime = 0;
+            }
+            
+            updateStatus('スペースキーを長押しして前進！音声が流れている間は安全です！');
+        }
+
+        // だるまの声を再生
+        function playDarumaVoice() {
+            if (isAudioLoaded && gameState === 'playing') {
+                darumaAudio.currentTime = 0;
+                darumaAudio.play().catch(e => {
+                    console.log('音声再生エラー:', e);
+                    updateStatus('⚠️ 音声の再生に失敗しました。ブラウザで音声が有効か確認してください。');
+                });
+                updateStatus('🎵 だるまさんがころんだ〜♪ 今のうちに進もう！');
+            }
+        }
+
+        // ステータス更新
+        function updateStatus(message) {
+            statusDiv.textContent = message;
+        }
+
+        // プレイヤー描画（走るアニメーション）
+        function drawPlayer() {
+            ctx.save();
+            
+            // 影
+            ctx.fillStyle = 'rgba(0,0,0,0.2)';
+            ctx.fillRect(player.x, player.y + player.height, player.width, 8);
+            
+            // アニメーション用の時間計算
+            const animSpeed = player.isMoving ? 0.3 : 0;
+            const armSwing = Math.sin(gameTimer * animSpeed) * 8;
+            const legSwing = Math.sin(gameTimer * animSpeed + Math.PI) * 10;
+            const bodyBob = player.isMoving ? Math.sin(gameTimer * animSpeed * 2) * 2 : 0;
+            
+            // 体（走る時に上下に揺れる）
+            ctx.fillStyle = '#4ECDC4';
+            ctx.fillRect(player.x + 8, player.y + 20 + bodyBob, 24, 30);
+            
+            // 頭
+            ctx.fillStyle = '#FFE4B5';
+            ctx.beginPath();
+            ctx.arc(player.x + 20, player.y + 15 + bodyBob, 15, 0, 2 * Math.PI);
+            ctx.fill();
+            
+            // 髪
+            ctx.fillStyle = '#8B4513';
+            ctx.beginPath();
+            ctx.arc(player.x + 20, player.y + 8 + bodyBob, 12, Math.PI, 2 * Math.PI);
+            ctx.fill();
+            
+            // 目（走る時は集中した表情）
+            ctx.fillStyle = 'black';
+            if (player.isMoving) {
+                // 集中した目
+                ctx.fillRect(player.x + 16, player.y + 11 + bodyBob, 3, 2);
+                ctx.fillRect(player.x + 23, player.y + 11 + bodyBob, 3, 2);
+            } else {
+                // 普通の目
+                ctx.beginPath();
+                ctx.arc(player.x + 16, player.y + 12 + bodyBob, 2, 0, 2 * Math.PI);
+                ctx.arc(player.x + 24, player.y + 12 + bodyBob, 2, 0, 2 * Math.PI);
+                ctx.fill();
+            }
+            
+            // 口
+            if (gameState === 'danger' && player.isMoving) {
+                ctx.strokeStyle = 'red';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(player.x + 20, player.y + 18 + bodyBob, 3, 0, Math.PI);
+                ctx.stroke();
+            } else if (player.isMoving) {
+                // 走る時は口を開く
+                ctx.fillStyle = 'black';
+                ctx.beginPath();
+                ctx.ellipse(player.x + 20, player.y + 18 + bodyBob, 2, 3, 0, 0, 2 * Math.PI);
+                ctx.fill();
+            } else {
+                ctx.strokeStyle = 'black';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.arc(player.x + 20, player.y + 18 + bodyBob, 3, Math.PI, 0);
+                ctx.stroke();
+            }
+            
+            // 腕（走る時に大きく振る）
+            ctx.fillStyle = '#4ECDC4';
+            ctx.strokeStyle = '#4ECDC4';
+            ctx.lineWidth = 6;
+            ctx.lineCap = 'round';
+            
+            // 左腕
+            ctx.beginPath();
+            ctx.moveTo(player.x + 8, player.y + 25 + bodyBob);
+            ctx.lineTo(player.x + 2 + armSwing, player.y + 35 + bodyBob);
+            ctx.stroke();
+            
+            // 右腕
+            ctx.beginPath();
+            ctx.moveTo(player.x + 32, player.y + 25 + bodyBob);
+            ctx.lineTo(player.x + 38 - armSwing, player.y + 35 + bodyBob);
+            ctx.stroke();
+            
+            // 脚（走る時に大きく動く）
+            ctx.lineWidth = 8;
+            
+            // 左脚
+            ctx.beginPath();
+            ctx.moveTo(player.x + 12, player.y + 50 + bodyBob);
+            ctx.lineTo(player.x + 8 + legSwing, player.y + 65 + bodyBob);
+            ctx.stroke();
+            
+            // 右脚
+            ctx.beginPath();
+            ctx.moveTo(player.x + 28, player.y + 50 + bodyBob);
+            ctx.lineTo(player.x + 32 - legSwing, player.y + 65 + bodyBob);
+            ctx.stroke();
+            
+            // 足
+            ctx.fillStyle = '#2C3E50';
+            if (player.isMoving) {
+                ctx.fillRect(player.x + 6 + legSwing, player.y + 63 + bodyBob, 8, 4);
+                ctx.fillRect(player.x + 30 - legSwing, player.y + 63 + bodyBob, 8, 4);
+            } else {
+                ctx.fillRect(player.x + 10, player.y + 63, 8, 4);
+                ctx.fillRect(player.x + 22, player.y + 63, 8, 4);
+            }
+            
+            // 走る時のスピードライン
+            if (player.isMoving && gameState === 'playing') {
+                ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+                ctx.lineWidth = 2;
+                for (let i = 0; i < 3; i++) {
+                    ctx.beginPath();
+                    ctx.moveTo(player.x - 10 - i * 8, player.y + 20 + i * 10);
+                    ctx.lineTo(player.x - 20 - i * 8, player.y + 25 + i * 10);
+                    ctx.stroke();
+                }
+            }
+            
+            ctx.restore();
+        }
+
+        // だるま描画（振り返りアニメーション）
+        function drawDaruma() {
+            ctx.save();
+            
+            // 影
+            ctx.fillStyle = 'rgba(0,0,0,0.2)';
+            ctx.fillRect(daruma.x, daruma.y + daruma.height, daruma.width, 8);
+            
+            // 体（だるま）
+            ctx.fillStyle = '#FF6B6B';
+            ctx.beginPath();
+            ctx.ellipse(daruma.x + 30, daruma.y + 50, 25, 35, 0, 0, 2 * Math.PI);
+            ctx.fill();
+            
+            // 体の装飾
+            ctx.fillStyle = '#FFD700';
+            ctx.fillRect(daruma.x + 20, daruma.y + 40, 20, 4);
+            ctx.fillRect(daruma.x + 22, daruma.y + 55, 16, 3);
+            
+            // 顔（回転アニメーション付き）
+            ctx.save();
+            ctx.translate(daruma.x + 30, daruma.y + 25);
+            ctx.rotate(daruma.headRotation);
+            
+            // 顔の背景
+            ctx.fillStyle = '#FFE4B5';
+            ctx.beginPath();
+            ctx.arc(0, 0, 20, 0, 2 * Math.PI);
+            ctx.fill();
+            
+            if (daruma.isTurned || daruma.headRotation !== 0) {
+                // 振り返った顔（怒った表情）
+                ctx.fillStyle = 'red';
+                ctx.beginPath();
+                ctx.arc(-5, -3, 3, 0, 2 * Math.PI);
+                ctx.arc(5, -3, 3, 0, 2 * Math.PI);
+                ctx.fill();
+                
+                // 怒った口
+                ctx.strokeStyle = 'red';
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.arc(0, 5, 5, 0, Math.PI);
+                ctx.stroke();
+                
+                // 怒りマーク
+                ctx.strokeStyle = 'red';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(-12, -8);
+                ctx.lineTo(-8, -12);
+                ctx.moveTo(-8, -8);
+                ctx.lineTo(-12, -12);
+                ctx.stroke();
+                
+                // 眉毛
+                ctx.strokeStyle = 'black';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(-8, -6);
+                ctx.lineTo(-2, -8);
+                ctx.moveTo(2, -8);
+                ctx.lineTo(8, -6);
+                ctx.stroke();
+                
+                // 警告エフェクト
+                if (player.isMoving && daruma.isTurned) {
+                    ctx.restore(); // 回転を戻してから全画面エフェクト
+                    ctx.fillStyle = 'rgba(255,0,0,0.3)';
+                    ctx.fillRect(-daruma.x - 30, -daruma.y - 25, canvas.width, canvas.height);
+                    ctx.save();
+                    ctx.translate(daruma.x + 30, daruma.y + 25);
+                    ctx.rotate(daruma.headRotation);
+                }
+            } else {
+                // 後ろ向きの顔
+                ctx.fillStyle = '#8B4513';
+                ctx.fillRect(-10, -15, 20, 25);
+                
+                // 髪の詳細
+                ctx.fillStyle = '#654321';
+                ctx.fillRect(-12, -18, 24, 8);
+                
+                // 髪の束
+                for (let i = -8; i <= 8; i += 4) {
+                    ctx.fillRect(i - 1, -20, 2, 4);
+                }
+            }
+            
+            ctx.restore();
+            ctx.restore();
+        }
+
+        // 背景描画
+        function drawBackground() {
+            // 空
+            const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+            gradient.addColorStop(0, '#87CEEB');
+            gradient.addColorStop(1, '#98FB98');
+            ctx.fillStyle = gradient;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            
+            // 雲
+            ctx.fillStyle = 'rgba(255,255,255,0.8)';
+            ctx.beginPath();
+            ctx.arc(150, 80, 25, 0, 2 * Math.PI);
+            ctx.arc(180, 80, 35, 0, 2 * Math.PI);
+            ctx.arc(210, 80, 25, 0, 2 * Math.PI);
+            ctx.fill();
+            
+            ctx.beginPath();
+            ctx.arc(500, 60, 20, 0, 2 * Math.PI);
+            ctx.arc(520, 60, 30, 0, 2 * Math.PI);
+            ctx.arc(545, 60, 20, 0, 2 * Math.PI);
+            ctx.fill();
+            
+            // 地面
+            ctx.fillStyle = '#90EE90';
+            ctx.fillRect(0, 360, canvas.width, 40);
+            
+            // スタートライン
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = 3;
+            ctx.setLineDash([10, 10]);
+            ctx.beginPath();
+            ctx.moveTo(80, 360);
+            ctx.lineTo(80, 400);
+            ctx.stroke();
+            
+            // ゴールライン
+            ctx.strokeStyle = 'red';
+            ctx.lineWidth = 3;
+            ctx.setLineDash([5, 5]);
+            ctx.beginPath();
+            ctx.moveTo(650, 300);
+            ctx.lineTo(650, 400);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            
+            // ゴール旗
+            ctx.fillStyle = 'red';
+            ctx.fillRect(645, 250, 10, 50);
+            ctx.fillStyle = 'white';
+            ctx.fillRect(655, 250, 30, 20);
+            ctx.fillStyle = 'red';
+            ctx.font = '12px Arial';
+            ctx.fillText('GOAL', 660, 262);
+        }
+
+        // UI描画
+        function drawUI() {
+            // スコア
+            ctx.fillStyle = 'white';
+            ctx.font = 'bold 20px Arial';
+            ctx.fillText(`スコア: ${score}`, 20, 30);
+            ctx.fillText(`レベル: ${level}`, 20, 55);
+            
+            // プログレスバー
+            const progress = (player.x - 50) / (650 - 50);
+            ctx.fillStyle = 'rgba(0,0,0,0.3)';
+            ctx.fillRect(20, 80, 200, 20);
+            ctx.fillStyle = '#4ECDC4';
+            ctx.fillRect(20, 80, 200 * progress, 20);
+            ctx.strokeStyle = 'white';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(20, 80, 200, 20);
+            
+            // 状態表示
+            if (gameState === 'danger') {
+                ctx.fillStyle = 'red';
+                ctx.font = 'bold 24px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('止まれ！', canvas.width / 2, 50);
+                ctx.textAlign = 'left';
+            } else if (gameState === 'playing') {
+                ctx.fillStyle = 'green';
+                ctx.font = 'bold 24px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('🎵 安全 🎵', canvas.width / 2, 50);
+                ctx.textAlign = 'left';
+            }
+        }
+
+        // ゲームロジック更新
+        function update() {
+            if (gameState === 'waiting' || gameState === 'gameover' || gameState === 'win') {
+                return;
+            }
+            
+            gameTimer += 16; // 約60FPS
+            
+            // プレイヤーの移動（音声再生中のみ可能）
+            if (gameState === 'playing') {
+                player.isMoving = keys.space;
+                
+                if (player.isMoving) {
+                    player.x += 2;
+                    score += 1;
+                    
+                    // 歩行効果音（一定間隔で再生）
+                    if (gameTimer - player.lastStepTime > 300) {
+                        playStepSound();
+                        player.lastStepTime = gameTimer;
+                    }
+                    
+                    // ゴール判定
+                    if (player.x >= 630) {
+                        gameState = 'win';
+                        if (darumaAudio) {
+                            darumaAudio.pause();
+                        }
+                        playWinSound();
+                        updateStatus('🎉 ゴール！おめでとう！ 🎉');
+                        return;
+                    }
+                }
+            }
+            
+            // 危険状態の処理
+            if (gameState === 'danger') {
+                dangerDuration -= 16;
+                
+                // 動いている間はゲームオーバー判定
+                if (keys.space) {
+                    gameState = 'gameover';
+                    if (darumaAudio) {
+                        darumaAudio.pause();
+                    }
+                    playGameOverSound();
+                    updateStatus('💀 ゲームオーバー！だるまに見つかっちゃった！');
+                    return;
+                }
+                
+                // 危険状態終了
+                if (dangerDuration <= 0) {
+                    gameState = 'playing';
+                    daruma.isTurned = false;
+                    // 頭を元に戻すアニメーション
+                    const resetAnimation = () => {
+                        daruma.headRotation -= 0.15;
+                        if (daruma.headRotation <= 0) {
+                            daruma.headRotation = 0;
+                        } else {
+                            requestAnimationFrame(resetAnimation);
+                        }
+                    };
+                    resetAnimation();
+                    
+                    level = Math.floor(score / 200) + 1;
+                    updateStatus('👍 セーフ！次の音声を待とう...');
+                    
+                    // 次の音声再生まで少し待つ
+                    setTimeout(() => {
+                        playDarumaVoice();
+                    }, 1000 + Math.random() * 2000); // 1-3秒後
+                }
+            }
+        }
+
+        // 描画
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            drawBackground();
+            drawPlayer();
+            drawDaruma();
+            drawUI();
+        }
+
+        // ゲームループ
+        function gameLoop() {
+            update();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        // ゲーム開始
+        gameLoop();
+    </script>
+</body>
+</html>
